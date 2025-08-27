@@ -1,313 +1,335 @@
-import React, { useState, useEffect } from 'react';
-import './App.css';
+import React, { useState, useEffect } from "react";
+import "./App.css";
 
 interface VideoClip {
   id: string;
   filename: string;
-  duration?: number;
-  width?: number;
-  height?: number;
-  fps?: number;
-  has_audio?: boolean;
-  file_size?: number;
-  thumbnail?: string;
+  file_path: string;
+  file_size: number;
 }
 
-interface ProcessingProgress {
-  stage: string;
-  progress: number;
-  message?: string;
-  output_filename?: string;
+interface ConcatResult {
+  message: string;
+  output_filename: string;
+  output_path: string;
+  had_audio: boolean;
+  clips_processed: number;
 }
 
 function App() {
   const [clips, setClips] = useState<VideoClip[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState<ProcessingProgress | null>(null);
-  const [ws, setWs] = useState<WebSocket | null>(null);
+  const [result, setResult] = useState<ConcatResult | null>(null);
+  const [error, setError] = useState<string>("");
 
-  // WebSocket connection for progress updates
-  useEffect(() => {
-    const websocket = new WebSocket('ws://localhost:8000/api/process/progress');
-    
-    websocket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      setProgress(data);
-      
-      if (data.stage === 'complete' || data.stage === 'error') {
-        setIsProcessing(false);
-      }
-    };
-    
-    setWs(websocket);
-    
-    return () => {
-      websocket.close();
-    };
-  }, []);
-
-  // Load clips on component mount
+  // Load clips on mount
   useEffect(() => {
     loadClips();
   }, []);
 
   const loadClips = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/clips/');
+      const response = await fetch("http://localhost:8000/api/clips/");
       const data = await response.json();
       setClips(data.clips || []);
-    } catch (error) {
-      console.error('Error loading clips:', error);
+    } catch (err) {
+      setError("Failed to load clips");
+      console.error("Error loading clips:", err);
     }
   };
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
     setIsUploading(true);
+    setError("");
 
-    for (const file of files) {
-      try {
+    try {
+      for (const file of files) {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append("file", file);
 
-        const response = await fetch('http://localhost:8000/api/clips/upload', {
-          method: 'POST',
+        const response = await fetch("http://localhost:8000/api/clips/upload", {
+          method: "POST",
           body: formData,
         });
 
         if (!response.ok) {
           throw new Error(`Upload failed: ${response.statusText}`);
         }
-
-        const result = await response.json();
-        console.log('Upload successful:', result);
-      } catch (error) {
-        console.error('Upload error:', error);
-        alert(`Failed to upload ${file.name}: ${error}`);
       }
-    }
 
-    setIsUploading(false);
-    loadClips(); // Refresh clips list
-    
-    // Clear the input
-    event.target.value = '';
+      // Reload clips after upload
+      await loadClips();
+
+      // Clear the input
+      event.target.value = "";
+    } catch (err) {
+      setError(`Upload failed: ${err}`);
+      console.error("Upload error:", err);
+    } finally {
+      setIsUploading(false);
+    }
   };
 
-  const handleProcess = async () => {
-    if (clips.length === 0) {
-      alert('Please upload some video clips first');
+  const handleConcatenate = async () => {
+    if (clips.length < 2) {
+      setError("Need at least 2 clips to concatenate");
       return;
     }
 
     setIsProcessing(true);
-    setProgress({ stage: 'starting', progress: 0 });
+    setError("");
+    setResult(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/process/concatenate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          clip_ids: clips.map(clip => clip.id),
-          output_filename: 'concatenated_video.mp4'
-        }),
-      });
+      const response = await fetch(
+        "http://localhost:8000/api/clips/concatenate",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            clip_ids: clips.map((clip) => clip.id),
+          }),
+        }
+      );
 
       if (!response.ok) {
-        throw new Error(`Processing failed: ${response.statusText}`);
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Concatenation failed");
       }
 
-      const result = await response.json();
-      console.log('Processing started:', result);
-    } catch (error) {
-      console.error('Processing error:', error);
-      alert(`Processing failed: ${error}`);
+      const data = await response.json();
+      setResult(data);
+    } catch (err) {
+      setError(`Concatenation failed: ${err}`);
+      console.error("Concatenation error:", err);
+    } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleDeleteClip = async (clipId: string) => {
-    try {
-      const response = await fetch(`http://localhost:8000/api/clips/${clipId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error(`Delete failed: ${response.statusText}`);
-      }
-
-      loadClips(); // Refresh clips list
-    } catch (error) {
-      console.error('Delete error:', error);
-      alert(`Failed to delete clip: ${error}`);
-    }
-  };
-
-  const formatFileSize = (bytes?: number) => {
-    if (!bytes) return 'Unknown';
+  const formatFileSize = (bytes: number) => {
     const mb = bytes / (1024 * 1024);
     return `${mb.toFixed(1)} MB`;
   };
 
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return 'Unknown';
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-8">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold mb-2">🎬 ClipFlow</h1>
-          <p className="text-gray-400">Modern video concatenation tool</p>
-        </div>
+    <div
+      style={{
+        maxWidth: "800px",
+        margin: "0 auto",
+        padding: "20px",
+        fontFamily: "Arial, sans-serif",
+      }}
+    >
+      {/* Header */}
+      <header
+        style={{
+          textAlign: "center",
+          marginBottom: "40px",
+          borderBottom: "2px solid #ddd",
+          paddingBottom: "20px",
+        }}
+      >
+        <h1 style={{ fontSize: "2.5rem", margin: "0", color: "#333" }}>
+          🎬 ClipFlow
+        </h1>
+        <p style={{ color: "#666", margin: "10px 0 0 0" }}>
+          AI Video Concatenation Tool
+        </p>
+      </header>
 
-        {/* Upload Section */}
-        <div className="bg-gray-800 rounded-lg p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4">Upload Video Clips</h2>
-          <div className="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center">
-            <input
-              type="file"
-              multiple
-              accept="video/*"
-              onChange={handleFileUpload}
-              className="hidden"
-              id="file-upload"
-              disabled={isUploading}
-            />
-            <label
-              htmlFor="file-upload"
-              className={`cursor-pointer ${isUploading ? 'opacity-50' : 'hover:text-blue-400'}`}
-            >
-              <div className="text-4xl mb-4">📁</div>
-              <p className="text-lg mb-2">
-                {isUploading ? 'Uploading...' : 'Click to select video files'}
-              </p>
-              <p className="text-sm text-gray-500">
-                Supports MP4, AVI, MOV, MKV, and more
-              </p>
-            </label>
-          </div>
-        </div>
+      {/* Upload Section */}
+      <section
+        style={{
+          marginBottom: "40px",
+          padding: "20px",
+          border: "2px dashed #ccc",
+          borderRadius: "8px",
+          textAlign: "center",
+        }}
+      >
+        <h2 style={{ marginTop: "0" }}>📁 Upload Video Clips</h2>
+        <input
+          type="file"
+          multiple
+          accept="video/*"
+          onChange={handleFileUpload}
+          disabled={isUploading}
+          style={{ marginBottom: "10px" }}
+        />
+        <br />
+        <small style={{ color: "#666" }}>
+          {isUploading
+            ? "Uploading..."
+            : "Select multiple MP4 files (16fps recommended)"}
+        </small>
+      </section>
 
-        {/* Clips List */}
-        {clips.length > 0 && (
-          <div className="bg-gray-800 rounded-lg p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">Video Clips ({clips.length})</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {clips.map((clip, index) => (
-                <div key={clip.id} className="bg-gray-700 rounded-lg p-4">
-                  <div className="flex justify-between items-start mb-3">
-                    <span className="text-sm font-medium text-blue-400">#{index + 1}</span>
-                    <button
-                      onClick={() => handleDeleteClip(clip.id)}
-                      className="text-red-400 hover:text-red-300 text-sm"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  
-                  {clip.thumbnail && (
-                    <img
-                      src={clip.thumbnail}
-                      alt="Thumbnail"
-                      className="w-full h-32 object-cover rounded mb-3"
-                    />
-                  )}
-                  
-                  <h3 className="font-medium mb-2 truncate" title={clip.filename}>
-                    {clip.filename}
-                  </h3>
-                  
-                  <div className="text-sm text-gray-400 space-y-1">
-                    <div>Duration: {formatDuration(clip.duration)}</div>
-                    <div>Size: {formatFileSize(clip.file_size)}</div>
-                    {clip.width && clip.height && (
-                      <div>Resolution: {clip.width}×{clip.height}</div>
-                    )}
-                    {clip.fps && (
-                      <div>FPS: {clip.fps.toFixed(1)}</div>
-                    )}
-                    <div>Audio: {clip.has_audio ? '✅' : '❌'}</div>
-                  </div>
+      {/* Clips List */}
+      <section style={{ marginBottom: "40px" }}>
+        <h2>📋 Uploaded Clips ({clips.length})</h2>
+        {clips.length === 0 ? (
+          <p style={{ color: "#666", fontStyle: "italic" }}>
+            No clips uploaded yet
+          </p>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+              gap: "15px",
+            }}
+          >
+            {clips.map((clip, index) => (
+              <div
+                key={clip.id}
+                style={{
+                  padding: "15px",
+                  border: "1px solid #ddd",
+                  borderRadius: "8px",
+                  backgroundColor: "#f9f9f9",
+                }}
+              >
+                <div style={{ fontWeight: "bold", marginBottom: "10px" }}>
+                  #{index + 1}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
 
-        {/* Process Section */}
-        {clips.length > 0 && (
-          <div className="bg-gray-800 rounded-lg p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">Concatenate Videos</h2>
-            
-            {progress && (
-              <div className="mb-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-medium">
-                    {progress.stage.charAt(0).toUpperCase() + progress.stage.slice(1)}
-                  </span>
-                  <span className="text-sm">{progress.progress}%</span>
+                {/* Video Preview */}
+                <video
+                  width="180"
+                  height="120"
+                  controls
+                  style={{ marginBottom: "10px", borderRadius: "4px" }}
+                  src={`http://localhost:8000/api/clips/${clip.id}/video`}
+                >
+                  Your browser doesn't support video playback.
+                </video>
+
+                <div
+                  style={{
+                    fontSize: "14px",
+                    wordBreak: "break-word",
+                    marginBottom: "5px",
+                  }}
+                >
+                  {clip.filename}
                 </div>
-                <div className="w-full bg-gray-700 rounded-full h-2">
-                  <div
-                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${progress.progress}%` }}
-                  ></div>
+                <div style={{ fontSize: "12px", color: "#666" }}>
+                  {formatFileSize(clip.file_size)}
                 </div>
-                {progress.message && (
-                  <p className="text-sm text-gray-400 mt-2">{progress.message}</p>
-                )}
-                {progress.output_filename && progress.stage === 'complete' && (
-                  <div className="mt-4 p-3 bg-green-800 rounded">
-                    <p className="text-green-200">
-                      ✅ Video saved as: <strong>{progress.output_filename}</strong>
-                    </p>
-                    <p className="text-sm text-green-300 mt-1">
-                      Check the output folder for your concatenated video!
-                    </p>
-                  </div>
-                )}
               </div>
-            )}
-            
-            <button
-              onClick={handleProcess}
-              disabled={isProcessing || clips.length === 0}
-              className={`px-6 py-3 rounded-lg font-medium ${
-                isProcessing || clips.length === 0
-                  ? 'bg-gray-600 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700'
-              }`}
-            >
-              {isProcessing ? 'Processing...' : 'Concatenate Videos'}
-            </button>
-            
-            <p className="text-sm text-gray-400 mt-2">
-              This will combine all {clips.length} clips into a single video file.
-            </p>
+            ))}
           </div>
         )}
+      </section>
 
-        {/* Empty State */}
-        {clips.length === 0 && !isUploading && (
-          <div className="text-center py-12">
-            <div className="text-6xl mb-4">🎥</div>
-            <h2 className="text-2xl font-semibold mb-2">No clips uploaded yet</h2>
-            <p className="text-gray-400">
-              Upload some video files to get started with concatenation
-            </p>
+      {/* Concatenate Button */}
+      <section style={{ textAlign: "center", marginBottom: "40px" }}>
+        <button
+          onClick={handleConcatenate}
+          disabled={isProcessing || clips.length < 2}
+          style={{
+            fontSize: "1.5rem",
+            padding: "15px 40px",
+            backgroundColor:
+              clips.length >= 2 && !isProcessing ? "#007bff" : "#ccc",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            cursor:
+              clips.length >= 2 && !isProcessing ? "pointer" : "not-allowed",
+            fontWeight: "bold",
+          }}
+        >
+          {isProcessing ? "🔄 Processing..." : "🔄 CONCATENATE"}
+        </button>
+        <br />
+        <small style={{ color: "#666", marginTop: "10px", display: "block" }}>
+          {clips.length < 2
+            ? `Need ${2 - clips.length} more clips`
+            : `Ready to join ${clips.length} clips`}
+        </small>
+      </section>
+
+      {/* Error Display */}
+      {error && (
+        <section
+          style={{
+            padding: "15px",
+            backgroundColor: "#f8d7da",
+            color: "#721c24",
+            border: "1px solid #f5c6cb",
+            borderRadius: "8px",
+            marginBottom: "20px",
+          }}
+        >
+          <strong>Error:</strong> {error}
+        </section>
+      )}
+
+      {/* Results Section */}
+      {result && (
+        <section
+          style={{
+            padding: "20px",
+            backgroundColor: "#d4edda",
+            color: "#155724",
+            border: "1px solid #c3e6cb",
+            borderRadius: "8px",
+          }}
+        >
+          <h2 style={{ marginTop: "0" }}>🎥 Video Created Successfully!</h2>
+
+          {/* Video Player for Result */}
+          <div style={{ textAlign: "center", marginBottom: "20px" }}>
+            <video
+              width="400"
+              height="300"
+              controls
+              style={{ borderRadius: "8px", border: "2px solid #28a745" }}
+              src={`http://localhost:8000/api/clips/output/${result.output_filename}`}
+            >
+              Your browser doesn't support video playback.
+            </video>
           </div>
-        )}
-      </div>
+
+          <p>
+            <strong>Output File:</strong> {result.output_filename}
+          </p>
+          <p>
+            <strong>Clips Processed:</strong> {result.clips_processed}
+          </p>
+          <p>
+            <strong>Audio:</strong> {result.had_audio ? "Yes" : "No"}
+          </p>
+
+          {/* Download Link */}
+          <div style={{ textAlign: "center", marginTop: "15px" }}>
+            <a
+              href={`http://localhost:8000/api/clips/output/${result.output_filename}`}
+              download={result.output_filename}
+              style={{
+                padding: "10px 20px",
+                backgroundColor: "#28a745",
+                color: "white",
+                textDecoration: "none",
+                borderRadius: "5px",
+                fontWeight: "bold",
+              }}
+            >
+              📥 Download Video
+            </a>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
