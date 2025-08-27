@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from api.clips import router as clips_router
 
 app = FastAPI()
+app.include_router(clips_router)
 
 # Add CORS support for local React front end
 app.add_middleware(
