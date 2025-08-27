@@ -6,6 +6,7 @@ import subprocess
 import uuid
 from typing import List
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 class ConcatenateRequest(BaseModel):
     clip_ids: List[str]
@@ -51,6 +52,23 @@ async def upload_clip(file: UploadFile = File(...)):
 @router.get("/")
 async def list_clips():
     return {"clips": list(clips.values())}
+
+@router.get("/{clip_id}/video")
+async def get_clip_video(clip_id: str):
+    if clip_id not in clips:
+        raise HTTPException(status_code=404, detail=f"Clip {clip_id} not found")
+    
+    clip = clips[clip_id]
+    file_path = clip["file_path"]
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+    
+    return FileResponse(
+        path=file_path,
+        media_type="video/mp4",
+        filename=clip["filename"]
+    )
 
 @router.post("/concatenate")
 async def concatenate_clips(request: ConcatenateRequest):
@@ -181,3 +199,4 @@ async def concatenate_clips(request: ConcatenateRequest):
         }
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"FFmpeg error: {e.stderr}")
+    
