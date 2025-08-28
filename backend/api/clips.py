@@ -1,4 +1,5 @@
 from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi.responses import FileResponse
 import os
 import shutil
 from pathlib import Path
@@ -6,7 +7,6 @@ import subprocess
 import uuid
 from typing import List
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
 
 class ConcatenateRequest(BaseModel):
     clip_ids: List[str]
@@ -14,7 +14,7 @@ class ConcatenateRequest(BaseModel):
 
 router = APIRouter(prefix="/api/clips")
 
-# Storing clips in memory as they are small (~2MB per clip)
+# In-memory storage for clip metadata
 clips = {}
 clip_counter = 0
 
@@ -68,6 +68,19 @@ async def get_clip_video(clip_id: str):
         path=file_path,
         media_type="video/mp4",
         filename=clip["filename"]
+    )
+
+@router.get("/output/{filename}")
+async def get_output_video(filename: str):
+    output_path = OUTPUT_DIR / filename
+    
+    if not output_path.exists():
+        raise HTTPException(status_code=404, detail="Output file not found")
+    
+    return FileResponse(
+        path=str(output_path),
+        media_type="video/mp4",
+        filename=filename
     )
 
 @router.post("/concatenate")
@@ -160,43 +173,3 @@ async def concatenate_clips(request: ConcatenateRequest):
         }
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"FFmpeg error: {e.stderr}")
-    if not request.clip_ids:
-        raise HTTPException(status_code=400, detail="No clips provided")
-    
-    # Validate all clips exist
-    for clip_id in request.clip_ids:
-        if clip_id not in clips:
-            raise HTTPException(status_code=404, detail=f"Clip {clip_id} not found")
-    
-    # Generate output filename
-    if request.output_filename:
-        output_filename = request.output_filename
-    else:
-        output_filename = f"{uuid.uuid4().hex}.mp4"
-    
-    output_path = OUTPUT_DIR / output_filename
-    
-    # Build FFmpeg command for simple concatenation
-    input_files = [clips[clip_id]["file_path"] for clip_id in request.clip_ids]
-    
-    # Simple FFmpeg concat (we'll improve this later)
-    cmd = ["ffmpeg", "-y"]  # -y to overwrite
-    for file_path in input_files:
-        cmd.extend(["-i", file_path])
-    
-    # Simple concat filter
-    filter_complex = "".join([f"[{i}:v]" for i in range(len(input_files))])
-    filter_complex += f"concat=n={len(input_files)}:v=1:a=0[outv]"
-    
-    cmd.extend(["-filter_complex", filter_complex, "-map", "[outv]", str(output_path)])
-    
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        return {
-            "message": "Clips concatenated successfully",
-            "output_filename": output_filename,
-            "output_path": str(output_path)
-        }
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"FFmpeg error: {e.stderr}")
-    
